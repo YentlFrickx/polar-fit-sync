@@ -322,3 +322,142 @@ async def test_trigger_recorded_in_run(db, output_dir):
     last = db.last_run()
     assert last is not None
     assert last["trigger"] == "webhook"
+
+
+# ---------------------------------------------------------------------------
+# Sport-type filtering
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_include_filter_keeps_only_listed_sports(db, output_dir):
+    exercises = [
+        _make_exercise("e1", sport="RUNNING"),
+        _make_exercise("e2", sport="CYCLING"),
+        _make_exercise("e3", sport="SWIMMING"),
+    ]
+    _make_token(db)
+    client = _fake_client(exercises)
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset({"RUNNING", "CYCLING"}), filter_mode="include")
+    assert result.status == "ok"
+    assert result.new_files == 2
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+    assert db.is_downloaded("e2")
+    assert not db.is_downloaded("e3")
+
+
+@pytest.mark.asyncio
+async def test_exclude_filter_drops_listed_sports(db, output_dir):
+    exercises = [
+        _make_exercise("e1", sport="RUNNING"),
+        _make_exercise("e2", sport="CYCLING"),
+        _make_exercise("e3", sport="SWIMMING"),
+    ]
+    _make_token(db)
+    client = _fake_client(exercises)
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset({"SWIMMING"}), filter_mode="exclude")
+    assert result.status == "ok"
+    assert result.new_files == 2
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+    assert db.is_downloaded("e2")
+    assert not db.is_downloaded("e3")
+
+
+@pytest.mark.asyncio
+async def test_empty_filter_downloads_all(db, output_dir):
+    exercises = [
+        _make_exercise("e1", sport="RUNNING"),
+        _make_exercise("e2", sport="SWIMMING"),
+        _make_exercise("e3", sport="YOGA"),
+    ]
+    _make_token(db)
+    client = _fake_client(exercises)
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset(), filter_mode="include")
+    assert result.status == "ok"
+    assert result.new_files == 3
+    assert db.is_downloaded("e1")
+    assert db.is_downloaded("e2")
+    assert db.is_downloaded("e3")
+
+
+@pytest.mark.asyncio
+async def test_filter_case_insensitive(db, output_dir):
+    exercises = [
+        _make_exercise("e1", sport="RUNNING"),
+        _make_exercise("e2", sport="CYCLING"),
+    ]
+    _make_token(db)
+    client = _fake_client(exercises)
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset({"RUNNING"}), filter_mode="include")
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert db.is_downloaded("e1")
+    assert not db.is_downloaded("e2")
+
+
+@pytest.mark.asyncio
+async def test_include_filter_drops_null_sport(db, output_dir):
+    exercises = [
+        _make_exercise("e1", sport="RUNNING"),
+        _make_exercise("e2", sport=None),
+    ]
+    _make_token(db)
+    client = _fake_client(exercises)
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset({"RUNNING"}), filter_mode="include")
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert db.is_downloaded("e1")
+    assert not db.is_downloaded("e2")
+
+
+@pytest.mark.asyncio
+async def test_exclude_filter_keeps_null_sport(db, output_dir):
+    exercises = [
+        _make_exercise("e1", sport="SWIMMING"),
+        _make_exercise("e2", sport=None),
+    ]
+    _make_token(db)
+    client = _fake_client(exercises)
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset({"SWIMMING"}), filter_mode="exclude")
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert not db.is_downloaded("e1")
+    assert db.is_downloaded("e2")
+
+
+@pytest.mark.asyncio
+async def test_targeted_sync_respects_filter(db, output_dir):
+    exercises = [_make_exercise("e1", sport="SWIMMING")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    result = await run_sync(
+        db, client, output_dir,
+        target_id="e1",
+        trigger="webhook",
+        sport_filter=frozenset({"RUNNING"}),
+        filter_mode="include",
+    )
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    assert not db.is_downloaded("e1")
+    client.download_fit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_filtered_out_not_counted_as_error(db, output_dir):
+    exercises = [
+        _make_exercise("e1", sport="RUNNING"),
+        _make_exercise("e2", sport="SWIMMING"),
+        _make_exercise("e3", sport="CYCLING"),
+    ]
+    _make_token(db)
+    client = _fake_client(exercises)
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset({"RUNNING", "CYCLING"}), filter_mode="include")
+    assert result.status == "ok"
+    assert result.new_files == 2
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+    assert not db.is_downloaded("e2")
+    assert db.is_downloaded("e3")

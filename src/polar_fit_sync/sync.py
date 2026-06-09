@@ -39,6 +39,27 @@ from polar_fit_sync.polar import PolarClient, TokenExpiredError
 logger = logging.getLogger(__name__)
 
 
+def _passes_filter(sport: Optional[str], sport_filter: frozenset, mode: str) -> bool:
+    """Decide whether one exercise should be kept given the active sport filter.
+
+    An empty sport_filter means no filtering is in effect — always keep the
+    exercise (FR3). This is the fast path for the common case where no filter
+    env vars are set.
+
+    In include mode a null sport cannot match any named sport, so it is
+    dropped (FR5). In exclude mode a null sport is not in any block-list, so
+    it is kept (FR6). Comparison is always done in uppercase so the caller
+    does not need to normalise before calling (FR4).
+    """
+    if not sport_filter:
+        return True
+    sport_upper = sport.upper() if sport else None
+    if mode == "include":
+        return sport_upper in sport_filter if sport_upper is not None else False
+    else:  # exclude
+        return sport_upper not in sport_filter if sport_upper is not None else True
+
+
 @dataclass
 class RunResult:
     """Summary returned by run_sync to callers (scheduler, webhook, CLI)."""
@@ -55,6 +76,8 @@ async def run_sync(
     output_dir: str,
     target_id: Optional[str] = None,
     trigger: str = "poll",
+    sport_filter: frozenset = frozenset(),
+    filter_mode: str = "include",
 ) -> RunResult:
     """Download new Polar exercise FIT files incrementally.
 
@@ -119,6 +142,15 @@ async def run_sync(
                 exercises = client.list_exercises(token.access_token)
         else:
             exercises = client.list_exercises(token.access_token)
+
+        # --- Apply sport-type filter (before dedup, per FR7) ---
+        # Filtering before the dedup check ensures that filtered-out exercises
+        # are neither downloaded nor recorded in the database, and are never
+        # counted as errors (FR8). The log line satisfies FR10.
+        if sport_filter:
+            before = len(exercises)
+            exercises = [ex for ex in exercises if _passes_filter(ex.sport, sport_filter, filter_mode)]
+            logger.info("Sport filter (%s): kept %d of %d exercises.", filter_mode, len(exercises), before)
 
         # --- Filter to exercises we have not already downloaded ---
         new_exercises = [ex for ex in exercises if not db.is_downloaded(ex.id)]

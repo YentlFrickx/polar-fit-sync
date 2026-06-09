@@ -34,3 +34,4 @@
 - `sync_run.trigger` values: `poll` | `webhook` | `manual`. `sync_run.status` values: `ok` | `partial` | `no_token` | `token_expired` | `error`.
 - Sync exit code (manual CLI path): 0 for `ok`/`no_token`/`token_expired`; 1 for `partial`/`error`. This prevents the Kubernetes container from hard-failing on auth issues that require human re-link.
 - Polar webhook signature: HMAC-SHA256 over the raw request body using `PFS_WEBHOOK_SECRET`; verified via `hmac.compare_digest` (constant-time). Header name: `Polar-Webhook-Signature`.
+- Sport filtering: `PFS_SPORT_FILTER` (comma list) + `PFS_SPORT_FILTER_MODE` (`include`|`exclude`). Empty list = no filter. Matching is case-insensitive on uppercased sport name. `include` + null sport → dropped; `exclude` + null sport → kept. Applied in `run_sync` via `_passes_filter`; parsed once at call time by `Settings.sport_filter_set()`. Filter is forward-only — never deletes or backfills already-downloaded files.

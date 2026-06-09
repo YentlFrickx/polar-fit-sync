@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polar FIT Sync</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; color: #333; }
+        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; }
+        .card { border: 1px solid #ddd; border-radius: 6px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+        .warning { background: #fff8e1; border-color: #f0c000; }
+        .connected { background: #f0fff4; border-color: #48bb78; }
+        .label { font-size: 0.8rem; color: #666; text-transform: uppercase; letter-spacing: 0.05em; }
+        .value { font-size: 1rem; font-weight: 600; margin-bottom: 0.75rem; }
+        .btn { display: inline-block; padding: 0.5rem 1.2rem; border-radius: 4px; text-decoration: none; font-weight: 600; cursor: pointer; border: none; font-size: 0.95rem; }
+        .btn-primary { background: #3182ce; color: #fff; }
+        .btn-warning { background: #d69e2e; color: #fff; }
+        .btn-secondary { background: #718096; color: #fff; }
+        .pill { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; background: #e2e8f0; }
+        pre { background: #f4f4f4; border-radius: 4px; padding: 0.5rem 0.75rem; font-size: 0.85rem; overflow-x: auto; }
+    </style>
+</head>
+<body>
+<h1>Polar FIT Sync</h1>
+
+{% if token_expired %}
+<div class="card warning">
+    <strong>Token may be expired — re-link recommended.</strong>
+    <p style="margin:0.5rem 0 0.75rem">Your Polar access token is no longer valid. Syncing has stopped. Click below to re-authorize.</p>
+    <a href="/oauth/start" class="btn btn-warning">Re-link Polar account</a>
+</div>
+{% endif %}
+
+{% if token %}
+<div class="card connected">
+    <div class="label">Status</div>
+    <div class="value">Connected</div>
+    <div class="label">Polar user</div>
+    <div class="value">{{ token.x_user_id }}</div>
+    <div class="label">Files downloaded</div>
+    <div class="value">{{ file_count }}</div>
+    <div class="label">Last sync</div>
+    <div class="value">{% if last_run %}{{ last_run.finished_at }} ({{ last_run.status }}){% else %}Never{% endif %}</div>
+    <div class="label">Sync mode</div>
+    <div class="value"><span class="pill">{{ sync_mode }}</span></div>
+</div>
+
+{% if not token_expired %}
+<p><a href="/oauth/start" class="btn btn-secondary">Re-link Polar account</a></p>
+{% endif %}
+
+{% else %}
+<div class="card">
+    <div class="label">Status</div>
+    <div class="value">Not connected</div>
+    <p style="margin:0.5rem 0 0.75rem">Link your Polar account to start downloading exercise files.</p>
+    <a href="/oauth/start" class="btn btn-primary">Connect Polar</a>
+</div>
+{% endif %}
+
+{% if show_webhook_url %}
+<div class="card">
+    <div class="label">Webhook URL</div>
+    <p style="margin:0.25rem 0 0.5rem;font-size:0.9rem">Register this URL with your Polar app to receive exercise events immediately:</p>
+    <pre>{{ webhook_url }}</pre>
+</div>
+{% endif %}
+
+<p style="font-size:0.8rem;color:#999;margin-top:2rem">Polar FIT Sync — sync mode: {{ sync_mode }}</p>
+</body>
+</html>

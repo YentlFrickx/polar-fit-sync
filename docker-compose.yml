@@ -1,0 +1,35 @@
+services:
+  polar-fit-sync:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - pfs-data:/data
+    # Secrets and mode-specific config come from .env (copy .env.example → .env first)
+    env_file:
+      - .env
+    environment:
+      PFS_SYNC_MODE: poll
+      PFS_SYNC_INTERVAL_MINUTES: "60"
+      PFS_LOG_LEVEL: DEBUG
+      PFS_DB_PATH: /data/state.db
+      PFS_OUTPUT_DIR: /data/fit
+      # For webhook testing:
+      #   1. Set PFS_SYNC_MODE=both and PFS_WEBHOOK_SECRET=<your-secret> in .env
+      #   2. Run: ngrok http 8080
+      #   3. Register https://<ngrok-host>/webhook/polar with your Polar app
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  pfs-data:

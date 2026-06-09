@@ -71,7 +71,12 @@ def create_app(settings: Settings) -> FastAPI:
     # Python 3.12+ when called outside a running loop.
     async def _sync_runner():
         """Await run_sync inside APScheduler's async job dispatch."""
-        await run_sync(db, client, settings.pfs_output_dir, trigger="poll")
+        await run_sync(
+            db, client, settings.pfs_output_dir,
+            trigger="poll",
+            sport_filter=settings.sport_filter_set(),
+            filter_mode=settings.pfs_sport_filter_mode,
+        )
 
     scheduler = build_scheduler(settings, _sync_runner)
 
@@ -213,6 +218,8 @@ def create_app(settings: Settings) -> FastAPI:
                 settings.pfs_output_dir,
                 target_id=event.entity_id,
                 trigger="webhook",
+                sport_filter=settings.sport_filter_set(),
+                filter_mode=settings.pfs_sport_filter_mode,
             )
         )
 

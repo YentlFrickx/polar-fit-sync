@@ -85,6 +85,8 @@ All configuration is done through environment variables. Copy `.env.example` to 
 | `PFS_DB_PATH` | No | `/data/state.db` | Path to the SQLite state database |
 | `PFS_MEMBER_ID` | No | `polar-fit-sync` | Stable identifier used when registering your Polar account |
 | `PFS_LOG_LEVEL` | No | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `PFS_SPORT_FILTER` | No | `""` | Comma-separated sport names to filter (e.g. `RUNNING,CYCLING`). Empty = no filter. |
+| `PFS_SPORT_FILTER_MODE` | No | `include` | `include` = allow-list (only listed sports); `exclude` = block-list (skip listed sports). |
 
 ---
 

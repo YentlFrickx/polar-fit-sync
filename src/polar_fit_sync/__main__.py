@@ -90,7 +90,14 @@ def _run_sync(settings) -> None:
         redirect_uri=settings.polar_redirect_uri,
     )
 
-    result = asyncio.run(run_sync(db, client, settings.pfs_output_dir, trigger="manual"))
+    result = asyncio.run(
+        run_sync(
+            db, client, settings.pfs_output_dir,
+            trigger="manual",
+            sport_filter=settings.sport_filter_set(),
+            filter_mode=settings.pfs_sport_filter_mode,
+        )
+    )
 
     print(
         f"Sync complete: status={result.status}, "

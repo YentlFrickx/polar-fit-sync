@@ -50,8 +50,16 @@ class Settings(BaseSettings):
     # --- Observability ---
     pfs_log_level: str = "INFO"
 
+    # --- Sport-type filtering ---
+    # PFS_SPORT_FILTER: comma-separated list of sport names (e.g. "RUNNING,CYCLING").
+    # Empty string (the default) means no filtering — all sports are downloaded.
+    pfs_sport_filter: str = ""
+    # PFS_SPORT_FILTER_MODE: "include" = allow-list (only listed sports are kept);
+    # "exclude" = block-list (listed sports are skipped).
+    pfs_sport_filter_mode: str = "include"
+
     @model_validator(mode="after")
-    def _validate_webhook_secret(self) -> "Settings":
+    def _validate_settings(self) -> "Settings":
         # We validate the webhook secret at construction time, not lazily, because
         # starting a service in webhook mode without a secret means every request
         # would pass verification — a silent security hole.
@@ -59,7 +67,31 @@ class Settings(BaseSettings):
             raise ValueError(
                 "PFS_WEBHOOK_SECRET is required when PFS_SYNC_MODE includes webhook"
             )
+        # Reject invalid filter modes immediately so the operator sees a clear error
+        # at startup rather than silently downloading everything (include default)
+        # or silently blocking everything (an unrecognised mode treated as include).
+        if self.pfs_sport_filter_mode not in {"include", "exclude"}:
+            raise ValueError(
+                f"PFS_SPORT_FILTER_MODE must be 'include' or 'exclude', "
+                f"got '{self.pfs_sport_filter_mode}'"
+            )
         return self
+
+    def sport_filter_set(self) -> frozenset:
+        """Parse PFS_SPORT_FILTER into a frozenset of uppercased sport names.
+
+        Splits on commas, strips whitespace per token, drops empty tokens, and
+        uppercases everything so that matching in run_sync is case-insensitive.
+        Returns an empty frozenset when PFS_SPORT_FILTER is unset — the empty
+        set is the sentinel that tells run_sync to skip filtering entirely (FR3).
+        """
+        if not self.pfs_sport_filter:
+            return frozenset()
+        return frozenset(
+            token.strip().upper()
+            for token in self.pfs_sport_filter.split(",")
+            if token.strip()
+        )
 
     def require_oauth(self) -> None:
         """Raise ValueError if the OAuth credentials needed for the web command are missing.

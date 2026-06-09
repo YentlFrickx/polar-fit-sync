@@ -1,0 +1,8 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "extra-files": ["src/polar_fit_sync/__init__.py"]
+    }
+  }
+}

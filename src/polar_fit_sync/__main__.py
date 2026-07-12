@@ -25,6 +25,21 @@ import pathlib
 import sys
 
 
+class _HealthzLogFilter(logging.Filter):
+    """Drops uvicorn access-log records for /healthz requests.
+
+    The health check runs on a short, fixed interval (load balancer / uptime
+    probe), so its access-log line is pure noise that drowns out the
+    request lines we actually care about (/oauth/start, /oauth/callback,
+    /webhook/polar). Filtering by message substring is the only option here:
+    uvicorn's access logger formats the request line into the message itself
+    rather than exposing path as a structured record attribute.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/healthz" not in record.getMessage()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="polar_fit_sync",
@@ -45,6 +60,10 @@ def main() -> None:
         level=getattr(logging, settings.pfs_log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Registered globally (not just on the web path) so it's harmless and
+    # in place regardless of which command runs first; uvicorn.access only
+    # ever emits records when the web server is actually serving requests.
+    logging.getLogger("uvicorn.access").addFilter(_HealthzLogFilter())
 
     # Ensure the output directory exists on both paths.
     pathlib.Path(settings.pfs_output_dir).mkdir(parents=True, exist_ok=True)

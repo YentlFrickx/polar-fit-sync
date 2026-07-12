@@ -25,6 +25,7 @@
 # What this file does NOT do: it does not handle HTTP routing, scheduler
 # lifecycle, or OAuth.
 
+import io
 import logging
 import os
 import pathlib
@@ -32,6 +33,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
+
+import fitparse
 
 from polar_fit_sync.db import Db
 from polar_fit_sync.polar import PolarClient, TokenExpiredError
@@ -58,6 +61,39 @@ def _passes_filter(sport: Optional[str], sport_filter: frozenset, mode: str) -> 
         return sport_upper in sport_filter if sport_upper is not None else False
     else:  # exclude
         return sport_upper not in sport_filter if sport_upper is not None else True
+
+
+def _parse_fit_sport(content: bytes) -> Optional[str]:
+    """Extract the session sport from raw FIT bytes, uppercased.
+
+    Polar's exercise-list API reports a coarse `sport` field that collapses
+    distinct activity types (e.g. walking vs. true-generic/uncategorized) into
+    the same string (`OTHER`). The FIT file's own `session` message carries a
+    finer-grained value, so this helper re-derives sport from the downloaded
+    bytes themselves rather than trusting the API label.
+
+    Only the FIRST `session` message is consulted. This is a deliberate
+    choice, not an oversight: genuinely multi-session (multisport) FIT files
+    are an acknowledged, unhandled edge case for this feature — no attempt is
+    made to reconcile or select among multiple sessions. See
+    OBJECTIONS_FIT_SPORT_PARSING.md O6 for the disposition that accepted this
+    default.
+
+    Returns None (rather than raising) when parsing succeeds but no session
+    message carries a usable sport value, so the caller can distinguish
+    "parsed fine, nothing to say" from "parsing itself failed". Any exception
+    from fitparse (corrupt bytes, wrong format, etc.) is left to propagate —
+    this stays a pure transform with no logging of its own, matching the
+    existing convention of pure helpers like _passes_filter/_build_path; the
+    caller owns the fallback decision and the warning log.
+    """
+    fit = fitparse.FitFile(io.BytesIO(content))
+    for msg in fit.get_messages("session"):
+        sport = msg.get_value("sport")
+        if sport:
+            return str(sport).upper()
+        return None
+    return None
 
 
 @dataclass
@@ -143,16 +179,15 @@ async def run_sync(
         else:
             exercises = client.list_exercises(token.access_token)
 
-        # --- Apply sport-type filter (before dedup, per FR7) ---
-        # Filtering before the dedup check ensures that filtered-out exercises
-        # are neither downloaded nor recorded in the database, and are never
-        # counted as errors (FR8). The log line satisfies FR10.
-        if sport_filter:
-            before = len(exercises)
-            exercises = [ex for ex in exercises if _passes_filter(ex.sport, sport_filter, filter_mode)]
-            logger.info("Sport filter (%s): kept %d of %d exercises.", filter_mode, len(exercises), before)
-
         # --- Filter to exercises we have not already downloaded ---
+        # Dedup runs against the FULL, unfiltered exercise list. Sport
+        # filtering used to happen here, before dedup — it now happens
+        # per-exercise inside the download loop below, after the FIT bytes
+        # are downloaded and parsed (see the loop for why: Polar's coarse API
+        # sport is ambiguous, e.g. walking vs. generic both report "OTHER",
+        # and only the downloaded FIT session data can disambiguate them).
+        # Dedup itself only needs the exercise id, so it is unaffected by
+        # where filtering happens and stays first.
         new_exercises = [ex for ex in exercises if not db.is_downloaded(ex.id)]
         logger.info(
             "Sync run (trigger=%s): %d total, %d new.",
@@ -162,15 +197,52 @@ async def run_sync(
         )
 
         # --- Download each new exercise ---
+        filtered_count = 0
         for ex in new_exercises:
             try:
                 content = client.download_fit(token.access_token, ex.id)
-                final_path = _build_path(output_dir, ex.start_time, ex.sport, ex.id)
+
+                # Determine the effective sport from the FIT bytes themselves,
+                # falling back to the coarse API sport on any parse failure.
+                # This lookup is deliberately isolated in a local try/except
+                # (rather than the outer per-exercise handler below) so that a
+                # parse failure never counts as an error (FR3/FR9) — it is an
+                # expected, resilient fallback path, not a sync failure.
+                effective_sport = ex.sport
+                try:
+                    parsed_sport = _parse_fit_sport(content)
+                    if parsed_sport:
+                        effective_sport = parsed_sport
+                    else:
+                        logger.warning(
+                            "No session sport found in FIT data for exercise %s; "
+                            "falling back to API sport %r.", ex.id, ex.sport,
+                        )
+                except Exception:
+                    logger.warning(
+                        "Failed to parse FIT data for exercise %s; "
+                        "falling back to API sport %r.", ex.id, ex.sport, exc_info=True,
+                    )
+
+                # Filtering now happens here — post-download, post-parse —
+                # rather than on the coarse API sport before dedup, so that
+                # exercises whose true sport only the FIT bytes can reveal
+                # (e.g. walking vs. generic, both API sport="OTHER") are
+                # classified correctly before the filter decision is made.
+                if not _passes_filter(effective_sport, sport_filter, filter_mode):
+                    filtered_count += 1
+                    logger.info(
+                        "Exercise %s (effective sport=%s) filtered out post-download; discarding.",
+                        ex.id, effective_sport,
+                    )
+                    continue
+
+                final_path = _build_path(output_dir, ex.start_time, effective_sport, ex.id)
                 _atomic_write(final_path, content)
                 db.record_downloaded(
                     exercise_id=ex.id,
                     file_path=str(final_path),
-                    sport=ex.sport,
+                    sport=effective_sport,
                     start_time=ex.start_time,
                 )
                 new_files += 1
@@ -181,6 +253,12 @@ async def run_sync(
             except Exception:
                 logger.exception("Failed to download exercise %s.", ex.id)
                 errors += 1
+
+        if sport_filter:
+            logger.info(
+                "Sport filter (%s): %d of %d exercises filtered out post-download.",
+                filter_mode, filtered_count, len(new_exercises),
+            )
 
     except TokenExpiredError:
         logger.warning("Received 401 from Polar. Flagging token as expired.")

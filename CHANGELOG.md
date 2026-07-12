@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/YentlFrickx/polar-fit-sync/compare/v0.2.1...v0.2.2) (2026-07-12)
+
+
+### Bug Fixes
+
+* suppress uvicorn access-log noise for /healthz requests ([5fd5ee8](https://github.com/YentlFrickx/polar-fit-sync/commit/5fd5ee82d3f521825504c933bd53b2eefe478d41))
+* suppress uvicorn access-log noise for /healthz requests ([fa77bc1](https://github.com/YentlFrickx/polar-fit-sync/commit/fa77bc1697cbb30bf9aa05d1ed7d244e8d8db417))
+
 ## [0.2.1](https://github.com/YentlFrickx/polar-fit-sync/compare/v0.2.0...v0.2.1) (2026-07-12)
 
 

@@ -9,6 +9,7 @@
 
 import os
 import pathlib
+import sqlite3
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from unittest.mock import MagicMock
@@ -75,6 +76,37 @@ def _fake_client(exercises: list[Exercise], fit_content: bytes = b"FITDATA") -> 
     )
     client.download_fit.return_value = fit_content
     return client
+
+
+def _patch_fit_sport(monkeypatch, mapping=None, raises=False):
+    """Monkeypatch polar_fit_sync.sync._parse_fit_sport for controlled test behaviour."""
+    if raises:
+        def _raise(content):
+            raise Exception("corrupt FIT")
+        monkeypatch.setattr("polar_fit_sync.sync._parse_fit_sport", _raise)
+        return
+    mapping = mapping or {}
+    def _fake_parse(content):
+        return mapping.get(content)
+    monkeypatch.setattr("polar_fit_sync.sync._parse_fit_sport", _fake_parse)
+
+
+def _fit_bytes_for(eid):
+    """Deterministic, per-exercise-distinguishable fake FIT content."""
+    return f"FIT:{eid}".encode()
+
+
+def _recorded_sport(db, exercise_id):
+    """Read back the sport column recorded for one exercise, straight from SQLite."""
+    conn = sqlite3.connect(db._path)
+    try:
+        row = conn.execute(
+            "SELECT sport FROM downloaded_exercise WHERE exercise_id = ?",
+            (exercise_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +361,7 @@ async def test_trigger_recorded_in_run(db, output_dir):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_include_filter_keeps_only_listed_sports(db, output_dir):
+async def test_include_filter_keeps_only_listed_sports(db, output_dir, monkeypatch):
     exercises = [
         _make_exercise("e1", sport="RUNNING"),
         _make_exercise("e2", sport="CYCLING"),
@@ -337,6 +369,12 @@ async def test_include_filter_keeps_only_listed_sports(db, output_dir):
     ]
     _make_token(db)
     client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {
+        _fit_bytes_for("e1"): "RUNNING",
+        _fit_bytes_for("e2"): "CYCLING",
+        _fit_bytes_for("e3"): "SWIMMING",
+    })
     result = await run_sync(db, client, output_dir, sport_filter=frozenset({"RUNNING", "CYCLING"}), filter_mode="include")
     assert result.status == "ok"
     assert result.new_files == 2
@@ -347,7 +385,7 @@ async def test_include_filter_keeps_only_listed_sports(db, output_dir):
 
 
 @pytest.mark.asyncio
-async def test_exclude_filter_drops_listed_sports(db, output_dir):
+async def test_exclude_filter_drops_listed_sports(db, output_dir, monkeypatch):
     exercises = [
         _make_exercise("e1", sport="RUNNING"),
         _make_exercise("e2", sport="CYCLING"),
@@ -355,6 +393,12 @@ async def test_exclude_filter_drops_listed_sports(db, output_dir):
     ]
     _make_token(db)
     client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {
+        _fit_bytes_for("e1"): "RUNNING",
+        _fit_bytes_for("e2"): "CYCLING",
+        _fit_bytes_for("e3"): "SWIMMING",
+    })
     result = await run_sync(db, client, output_dir, sport_filter=frozenset({"SWIMMING"}), filter_mode="exclude")
     assert result.status == "ok"
     assert result.new_files == 2
@@ -365,7 +409,7 @@ async def test_exclude_filter_drops_listed_sports(db, output_dir):
 
 
 @pytest.mark.asyncio
-async def test_empty_filter_downloads_all(db, output_dir):
+async def test_empty_filter_downloads_all(db, output_dir, monkeypatch):
     exercises = [
         _make_exercise("e1", sport="RUNNING"),
         _make_exercise("e2", sport="SWIMMING"),
@@ -373,6 +417,12 @@ async def test_empty_filter_downloads_all(db, output_dir):
     ]
     _make_token(db)
     client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {
+        _fit_bytes_for("e1"): "RUNNING",
+        _fit_bytes_for("e2"): "SWIMMING",
+        _fit_bytes_for("e3"): "YOGA",
+    })
     result = await run_sync(db, client, output_dir, sport_filter=frozenset(), filter_mode="include")
     assert result.status == "ok"
     assert result.new_files == 3
@@ -382,13 +432,18 @@ async def test_empty_filter_downloads_all(db, output_dir):
 
 
 @pytest.mark.asyncio
-async def test_filter_case_insensitive(db, output_dir):
+async def test_filter_case_insensitive(db, output_dir, monkeypatch):
     exercises = [
         _make_exercise("e1", sport="RUNNING"),
         _make_exercise("e2", sport="CYCLING"),
     ]
     _make_token(db)
     client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {
+        _fit_bytes_for("e1"): "running",
+        _fit_bytes_for("e2"): "cycling",
+    })
     result = await run_sync(db, client, output_dir, sport_filter=frozenset({"RUNNING"}), filter_mode="include")
     assert result.status == "ok"
     assert result.new_files == 1
@@ -397,13 +452,18 @@ async def test_filter_case_insensitive(db, output_dir):
 
 
 @pytest.mark.asyncio
-async def test_include_filter_drops_null_sport(db, output_dir):
+async def test_include_filter_drops_null_sport(db, output_dir, monkeypatch):
     exercises = [
         _make_exercise("e1", sport="RUNNING"),
         _make_exercise("e2", sport=None),
     ]
     _make_token(db)
     client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {
+        _fit_bytes_for("e1"): "RUNNING",
+        _fit_bytes_for("e2"): None,
+    })
     result = await run_sync(db, client, output_dir, sport_filter=frozenset({"RUNNING"}), filter_mode="include")
     assert result.status == "ok"
     assert result.new_files == 1
@@ -412,13 +472,18 @@ async def test_include_filter_drops_null_sport(db, output_dir):
 
 
 @pytest.mark.asyncio
-async def test_exclude_filter_keeps_null_sport(db, output_dir):
+async def test_exclude_filter_keeps_null_sport(db, output_dir, monkeypatch):
     exercises = [
         _make_exercise("e1", sport="SWIMMING"),
         _make_exercise("e2", sport=None),
     ]
     _make_token(db)
     client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {
+        _fit_bytes_for("e1"): "SWIMMING",
+        _fit_bytes_for("e2"): None,
+    })
     result = await run_sync(db, client, output_dir, sport_filter=frozenset({"SWIMMING"}), filter_mode="exclude")
     assert result.status == "ok"
     assert result.new_files == 1
@@ -427,10 +492,12 @@ async def test_exclude_filter_keeps_null_sport(db, output_dir):
 
 
 @pytest.mark.asyncio
-async def test_targeted_sync_respects_filter(db, output_dir):
+async def test_targeted_sync_respects_filter(db, output_dir, monkeypatch):
     exercises = [_make_exercise("e1", sport="SWIMMING")]
     _make_token(db)
     client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {_fit_bytes_for("e1"): "SWIMMING"})
     result = await run_sync(
         db, client, output_dir,
         target_id="e1",
@@ -442,11 +509,15 @@ async def test_targeted_sync_respects_filter(db, output_dir):
     assert result.new_files == 0
     assert result.errors == 0
     assert not db.is_downloaded("e1")
-    client.download_fit.assert_not_called()
+    # CHANGED from assert_not_called(): the approved single-path design
+    # (rejected O2/O3 hybrid pre-filter) always downloads before deciding, so
+    # download_fit IS called even though the exercise is ultimately filtered
+    # out post-parse.
+    client.download_fit.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_filtered_out_not_counted_as_error(db, output_dir):
+async def test_filtered_out_not_counted_as_error(db, output_dir, monkeypatch):
     exercises = [
         _make_exercise("e1", sport="RUNNING"),
         _make_exercise("e2", sport="SWIMMING"),
@@ -454,6 +525,12 @@ async def test_filtered_out_not_counted_as_error(db, output_dir):
     ]
     _make_token(db)
     client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {
+        _fit_bytes_for("e1"): "RUNNING",
+        _fit_bytes_for("e2"): "SWIMMING",
+        _fit_bytes_for("e3"): "CYCLING",
+    })
     result = await run_sync(db, client, output_dir, sport_filter=frozenset({"RUNNING", "CYCLING"}), filter_mode="include")
     assert result.status == "ok"
     assert result.new_files == 2
@@ -461,3 +538,118 @@ async def test_filtered_out_not_counted_as_error(db, output_dir):
     assert db.is_downloaded("e1")
     assert not db.is_downloaded("e2")
     assert db.is_downloaded("e3")
+
+
+@pytest.mark.asyncio
+async def test_walking_vs_generic_distinguished_by_fit_parse_include_mode(db, output_dir, monkeypatch):
+    exercises = [_make_exercise("e1", sport="OTHER"), _make_exercise("e2", sport="OTHER")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {_fit_bytes_for("e1"): "WALKING", _fit_bytes_for("e2"): "GENERIC"})
+
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset({"WALKING"}), filter_mode="include")
+
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+    assert not db.is_downloaded("e2")
+    fit_files = list(pathlib.Path(output_dir).glob("*.fit"))
+    assert len(fit_files) == 1
+    assert "WALKING" in fit_files[0].name
+    assert _recorded_sport(db, "e1") == "WALKING"
+
+
+@pytest.mark.asyncio
+async def test_walking_vs_generic_exclude_mode(db, output_dir, monkeypatch):
+    exercises = [_make_exercise("e1", sport="OTHER"), _make_exercise("e2", sport="OTHER")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {_fit_bytes_for("e1"): "WALKING", _fit_bytes_for("e2"): "GENERIC"})
+
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset({"GENERIC"}), filter_mode="exclude")
+
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+    assert not db.is_downloaded("e2")
+
+
+@pytest.mark.asyncio
+async def test_corrupt_fit_bytes_falls_back_to_api_sport(db, output_dir, monkeypatch, caplog):
+    exercises = [_make_exercise("e1", sport="RUNNING")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    _patch_fit_sport(monkeypatch, raises=True)
+
+    with caplog.at_level("WARNING"):
+        result = await run_sync(db, client, output_dir, sport_filter=frozenset())
+
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+    fit_files = list(pathlib.Path(output_dir).glob("*.fit"))
+    assert len(fit_files) == 1
+    assert "RUNNING" in fit_files[0].name
+    assert _recorded_sport(db, "e1") == "RUNNING"
+    assert any("e1" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_no_session_sport_falls_back_to_api_sport(db, output_dir, monkeypatch):
+    exercises = [_make_exercise("e1", sport="RUNNING")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    _patch_fit_sport(monkeypatch, {b"FITDATA": None})
+
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset())
+
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+    fit_files = list(pathlib.Path(output_dir).glob("*.fit"))
+    assert len(fit_files) == 1
+    assert "RUNNING" in fit_files[0].name
+    assert _recorded_sport(db, "e1") == "RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_effective_sport_used_in_filename_and_db_record(db, output_dir, monkeypatch):
+    exercises = [_make_exercise("e1", sport="OTHER")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    _patch_fit_sport(monkeypatch, {b"FITDATA": "WALKING"})
+
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset())
+
+    assert result.status == "ok"
+    assert result.new_files == 1
+    fit_files = list(pathlib.Path(output_dir).glob("*.fit"))
+    assert len(fit_files) == 1
+    assert "WALKING" in fit_files[0].name
+    assert "OTHER" not in fit_files[0].name
+    assert _recorded_sport(db, "e1") == "WALKING"
+
+
+@pytest.mark.asyncio
+async def test_dedup_check_runs_on_unfiltered_list(db, output_dir, monkeypatch):
+    exercises = [_make_exercise("e1", sport="SWIMMING")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    _patch_fit_sport(monkeypatch, {b"FITDATA": "SWIMMING"})
+
+    first = await run_sync(db, client, output_dir, sport_filter=frozenset())
+    assert first.status == "ok"
+    assert first.new_files == 1
+    assert db.is_downloaded("e1")
+    call_count_after_first = client.download_fit.call_count
+
+    second = await run_sync(db, client, output_dir, sport_filter=frozenset({"SWIMMING"}), filter_mode="exclude")
+    assert second.status == "ok"
+    assert second.new_files == 0
+    assert client.download_fit.call_count == call_count_after_first

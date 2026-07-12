@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/YentlFrickx/polar-fit-sync/compare/v0.2.0...v0.2.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* classify sport from FIT session data instead of Polar's coarse API field ([b5516ae](https://github.com/YentlFrickx/polar-fit-sync/commit/b5516ae3235d56b3df15fb295db1ee93226250de))
+* classify sport from FIT session data instead of Polar's coarse API field ([b99063c](https://github.com/YentlFrickx/polar-fit-sync/commit/b99063cf1c8aafa33e87eb3930e9afc617c44fea))
+
 ## [0.2.0](https://github.com/YentlFrickx/polar-fit-sync/compare/v0.1.0...v0.2.0) (2026-06-09)
 
 

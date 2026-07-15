@@ -183,6 +183,84 @@ def test_count_downloaded(db):
 
 
 # ---------------------------------------------------------------------------
+# Skipped exercise tracking
+# ---------------------------------------------------------------------------
+
+
+def test_list_skipped_sports_empty_when_none_recorded(db):
+    assert db.list_skipped_sports() == {}
+
+
+def test_record_and_list_skipped_sports(db):
+    db.record_skipped("e2", "CYCLING")
+    assert db.list_skipped_sports() == {"e2": "CYCLING"}
+
+
+def test_record_skipped_with_null_sport(db):
+    """sport is nullable — a FIT parse that yields no session sport can still be skipped."""
+    db.record_skipped("e9", None)
+    assert db.list_skipped_sports() == {"e9": None}
+
+
+def test_list_skipped_sports_returns_all_rows(db):
+    db.record_skipped("e1", "RUNNING")
+    db.record_skipped("e2", "CYCLING")
+    db.record_skipped("e3", None)
+    assert db.list_skipped_sports() == {"e1": "RUNNING", "e2": "CYCLING", "e3": None}
+
+
+def test_record_skipped_is_insert_or_replace(db):
+    """Re-skipping the same exercise_id must refresh (not duplicate) its stored sport."""
+    db.record_skipped("e2", "CYCLING")
+    db.record_skipped("e2", "MOUNTAIN_BIKING")
+    assert db.list_skipped_sports() == {"e2": "MOUNTAIN_BIKING"}
+
+
+def test_delete_skipped_removes_row(db):
+    db.record_skipped("e2", "CYCLING")
+    assert "e2" in db.list_skipped_sports()
+    db.delete_skipped("e2")
+    assert "e2" not in db.list_skipped_sports()
+
+
+def test_delete_skipped_noop_when_no_row_exists(db):
+    """delete_skipped must be a harmless no-op when there is nothing to delete."""
+    db.delete_skipped("does-not-exist")  # must not raise
+    assert db.list_skipped_sports() == {}
+
+
+def test_delete_skipped_only_removes_matching_id(db):
+    db.record_skipped("e1", "RUNNING")
+    db.record_skipped("e2", "CYCLING")
+    db.delete_skipped("e1")
+    assert db.list_skipped_sports() == {"e2": "CYCLING"}
+
+
+def test_init_schema_creates_skipped_exercise_table(tmp_path):
+    """A fresh DB must have the skipped_exercise table after init_schema."""
+    d = Db(str(tmp_path / "test.db"))
+    d.init_schema()
+    conn = sqlite3.connect(d._path)
+    try:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='skipped_exercise'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+
+
+def test_init_schema_skipped_exercise_idempotent(tmp_path):
+    """Re-running init_schema against a DB that already has skipped_exercise rows
+    must not raise and must not lose data (CREATE TABLE IF NOT EXISTS)."""
+    d = Db(str(tmp_path / "test.db"))
+    d.init_schema()
+    d.record_skipped("e2", "CYCLING")
+    d.init_schema()  # second call, simulating a restart against an existing DB
+    assert d.list_skipped_sports() == {"e2": "CYCLING"}
+
+
+# ---------------------------------------------------------------------------
 # Sync run log
 # ---------------------------------------------------------------------------
 

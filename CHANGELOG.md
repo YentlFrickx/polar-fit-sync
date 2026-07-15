@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/YentlFrickx/polar-fit-sync/compare/v0.2.2...v0.3.0) (2026-07-15)
+
+
+### Features
+
+* remember filtered-out exercises to avoid redundant re-downloads ([2c22fce](https://github.com/YentlFrickx/polar-fit-sync/commit/2c22fce71fa97290353e8eaeca5f6180b56b2453))
+* remember filtered-out exercises to avoid redundant re-downloads ([986d05b](https://github.com/YentlFrickx/polar-fit-sync/commit/986d05b59bf348a984346c34a3a6125cbd928892))
+
 ## [0.2.2](https://github.com/YentlFrickx/polar-fit-sync/compare/v0.2.1...v0.2.2) (2026-07-12)
 
 

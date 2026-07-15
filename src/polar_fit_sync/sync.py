@@ -179,7 +179,18 @@ async def run_sync(
         else:
             exercises = client.list_exercises(token.access_token)
 
-        # --- Filter to exercises we have not already downloaded ---
+        # --- Filter to exercises we have not already downloaded, and skip
+        # --- exercises we remember filtering out (unless the filter has
+        # --- since loosened enough to let their stored sport through).
+        #
+        # skipped_sports is loaded once per run, not once per exercise, to
+        # avoid doubling the per-item DB round trips the existing
+        # is_downloaded check already makes. It is only queried when a
+        # filter is active — with no filter, _passes_filter is always True,
+        # so nothing is ever recorded as skipped and the lookup would be
+        # pure overhead (FR7).
+        skipped_sports = db.list_skipped_sports() if sport_filter else {}
+
         # Dedup runs against the FULL, unfiltered exercise list. Sport
         # filtering used to happen here, before dedup — it now happens
         # per-exercise inside the download loop below, after the FIT bytes
@@ -188,12 +199,39 @@ async def run_sync(
         # and only the downloaded FIT session data can disambiguate them).
         # Dedup itself only needs the exercise id, so it is unaffected by
         # where filtering happens and stays first.
-        new_exercises = [ex for ex in exercises if not db.is_downloaded(ex.id)]
+        new_exercises = []
+        already_downloaded = 0
+        remembered_skips = 0
+        for ex in exercises:
+            if db.is_downloaded(ex.id):
+                # Download-dedup takes strict precedence over skip-exclusion:
+                # checked first and short-circuits before any skip state is
+                # consulted for this id. This is what makes a stale
+                # skipped_exercise row left behind by a crash between
+                # record_downloaded and delete_skipped harmless (FR6) — it is
+                # simply never read once the exercise is downloaded.
+                already_downloaded += 1
+                continue
+            if sport_filter and ex.id in skipped_sports:
+                stored_sport = skipped_sports[ex.id]
+                # Recompute against the CURRENT filter rather than trusting a
+                # persisted signature. Still failing -> stays excluded with
+                # no re-download. Now passing (the filter loosened) -> falls
+                # through below to be re-downloaded and re-verified against
+                # live FIT bytes (FR3/FR4).
+                if not _passes_filter(stored_sport, sport_filter, filter_mode):
+                    remembered_skips += 1
+                    continue
+            new_exercises.append(ex)
+
         logger.info(
-            "Sync run (trigger=%s): %d total, %d new.",
+            "Sync run (trigger=%s): %d total, %d new, %d already downloaded, "
+            "%d remembered skips.",
             trigger,
             len(exercises),
             len(new_exercises),
+            already_downloaded,
+            remembered_skips,
         )
 
         # --- Download each new exercise ---
@@ -231,6 +269,12 @@ async def run_sync(
                 # classified correctly before the filter decision is made.
                 if not _passes_filter(effective_sport, sport_filter, filter_mode):
                     filtered_count += 1
+                    # Remember this skip so future runs don't re-download and
+                    # re-parse it just to reach the same conclusion. INSERT OR
+                    # REPLACE inside record_skipped means a re-evaluation that
+                    # skips again (e.g. FR4's re-verify path) refreshes the
+                    # stored sport/timestamp rather than erroring.
+                    db.record_skipped(ex.id, effective_sport)
                     logger.info(
                         "Exercise %s (effective sport=%s) filtered out post-download; discarding.",
                         ex.id, effective_sport,
@@ -245,6 +289,13 @@ async def run_sync(
                     sport=effective_sport,
                     start_time=ex.start_time,
                 )
+                # Clean up any stale skip row now that the exercise has
+                # actually been written (FR5). Two separate, non-atomic Db
+                # calls, matching this codebase's one-connection-per-call
+                # convention (FR6) — a crash between them is harmless because
+                # is_downloaded is checked before skip state on every future
+                # run (see the work-list loop above).
+                db.delete_skipped(ex.id)
                 new_files += 1
                 logger.info("Downloaded %s → %s", ex.id, final_path)
             except TokenExpiredError:
@@ -256,8 +307,9 @@ async def run_sync(
 
         if sport_filter:
             logger.info(
-                "Sport filter (%s): %d of %d exercises filtered out post-download.",
-                filter_mode, filtered_count, len(new_exercises),
+                "Sport filter (%s): %d of %d exercises filtered out post-download "
+                "this run (%d remembered from earlier runs, not re-downloaded).",
+                filter_mode, filtered_count, len(new_exercises), remembered_skips,
             )
 
     except TokenExpiredError:

@@ -14,6 +14,10 @@
 #   for an id that is already present is a silent no-op rather than an error.
 # - sync_run has a trigger column (poll | webhook | manual) so that dashboards can
 #   distinguish automated from manually invoked syncs.
+# - skipped_exercise uses INSERT OR REPLACE (unlike downloaded_exercise's INSERT
+#   OR IGNORE) because a re-skip must refresh the stored sport/timestamp — the
+#   caller re-evaluates the same id on every run it isn't yet downloaded, and a
+#   stale sport would defeat the recompute-based staleness check in sync.py.
 #
 # What this file does NOT do: it does not make network calls, read environment
 # variables, or contain any sync business logic.
@@ -101,6 +105,12 @@ class Db:
             errors      INTEGER NOT NULL DEFAULT 0,
             trigger     TEXT NOT NULL DEFAULT 'poll',
             status      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS skipped_exercise (
+            exercise_id TEXT PRIMARY KEY,
+            sport       TEXT,
+            skipped_at  TEXT NOT NULL
         );
         """
         with self._connect() as conn:
@@ -237,6 +247,68 @@ class Db:
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (exercise_id, file_path, sport, start_time, now),
+            )
+
+    # -------------------------------------------------------------------------
+    # Skipped exercise tracking
+    #
+    # Distinct from downloaded_exercise: a row here means "downloaded, parsed,
+    # and discarded because it failed the sport filter" rather than "a file
+    # exists on disk". Keeping it a separate table (rather than a status
+    # column on downloaded_exercise) avoids violating that table's NOT NULL
+    # file_path, which would no longer be true for a discarded exercise.
+    #
+    # There is deliberately no "filter signature" column here. Staleness is
+    # decided by recomputing _passes_filter(stored sport, current filter) at
+    # read time in sync.py — see PLAN_SKIP_TRACKING.md — so the only state
+    # this table needs to remember is the sport that was authoritatively
+    # determined (from FIT bytes) at skip time.
+    # -------------------------------------------------------------------------
+
+    def record_skipped(self, exercise_id: str, sport: Optional[str]) -> None:
+        """Record that an exercise was downloaded, parsed, and filtered out.
+
+        INSERT OR REPLACE (not IGNORE): a re-skip of the same id must refresh
+        the stored sport and timestamp, because a later run may re-evaluate
+        this id under a different filter and re-derive a different effective
+        sport from the same FIT bytes.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO skipped_exercise
+                    (exercise_id, sport, skipped_at)
+                VALUES (?, ?, ?)
+                """,
+                (exercise_id, sport, now),
+            )
+
+    def list_skipped_sports(self) -> dict[str, Optional[str]]:
+        """Return {exercise_id: sport} for every remembered skip.
+
+        A single batched query rather than a per-item lookup: the work-list
+        construction in sync.py needs the stored sport for every candidate
+        exercise, and fetching them all once per run avoids doubling the
+        per-item DB round trips that the existing is_downloaded check already
+        makes.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT exercise_id, sport FROM skipped_exercise"
+            ).fetchall()
+        return {row["exercise_id"]: row["sport"] for row in rows}
+
+    def delete_skipped(self, exercise_id: str) -> None:
+        """Remove a skip record, e.g. once the exercise is finally downloaded.
+
+        A harmless no-op when no row exists — callers invoke this
+        unconditionally after every successful download rather than checking
+        first.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM skipped_exercise WHERE exercise_id = ?", (exercise_id,)
             )
 
     # -------------------------------------------------------------------------

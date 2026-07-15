@@ -653,3 +653,244 @@ async def test_dedup_check_runs_on_unfiltered_list(db, output_dir, monkeypatch):
     assert second.status == "ok"
     assert second.new_files == 0
     assert client.download_fit.call_count == call_count_after_first
+
+
+# ---------------------------------------------------------------------------
+# Skip tracking (remember filtered-out exercises so they aren't re-downloaded)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_first_time_skip_is_recorded(db, output_dir, monkeypatch):
+    """Scenario 1: a first-time filtered-out exercise is discarded AND remembered."""
+    exercises = [_make_exercise("e2", sport="CYCLING")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {_fit_bytes_for("e2"): "CYCLING"})
+
+    result = await run_sync(
+        db, client, output_dir,
+        sport_filter=frozenset({"RUNNING"}), filter_mode="include",
+    )
+
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    assert not db.is_downloaded("e2")
+    fit_files = list(pathlib.Path(output_dir).glob("*.fit"))
+    assert fit_files == []
+    assert db.list_skipped_sports() == {"e2": "CYCLING"}
+
+
+@pytest.mark.asyncio
+async def test_remembered_skip_not_redownloaded_same_filter(db, output_dir, monkeypatch):
+    """Scenario 2: remembered skip under an unchanged filter is never re-downloaded."""
+    exercises = [_make_exercise("e2", sport="CYCLING")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {_fit_bytes_for("e2"): "CYCLING"})
+
+    first = await run_sync(
+        db, client, output_dir,
+        sport_filter=frozenset({"RUNNING"}), filter_mode="include",
+    )
+    assert first.status == "ok"
+    assert first.new_files == 0
+    assert first.errors == 0
+    call_count_after_first = client.download_fit.call_count
+    assert call_count_after_first == 1
+    assert db.list_skipped_sports() == {"e2": "CYCLING"}
+
+    second = await run_sync(
+        db, client, output_dir,
+        sport_filter=frozenset({"RUNNING"}), filter_mode="include",
+    )
+
+    assert second.status == "ok"
+    assert second.new_files == 0
+    assert second.errors == 0
+    assert client.download_fit.call_count == call_count_after_first
+    assert not db.is_downloaded("e2")
+    assert db.list_skipped_sports() == {"e2": "CYCLING"}
+
+
+@pytest.mark.asyncio
+async def test_filter_loosened_reconsiders_and_backfills_skipped_exercise(
+    db, output_dir, monkeypatch
+):
+    """Scenario 3: loosening the filter so the stored sport now passes triggers
+    exactly one re-download, a successful write, and cleanup of the stale skip row."""
+    exercises = [_make_exercise("e2", sport="CYCLING")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {_fit_bytes_for("e2"): "CYCLING"})
+
+    first = await run_sync(
+        db, client, output_dir,
+        sport_filter=frozenset({"RUNNING"}), filter_mode="include",
+    )
+    assert first.new_files == 0
+    assert not db.is_downloaded("e2")
+    assert db.list_skipped_sports() == {"e2": "CYCLING"}
+    call_count_after_first = client.download_fit.call_count
+
+    second = await run_sync(
+        db, client, output_dir,
+        sport_filter=frozenset({"RUNNING", "CYCLING"}), filter_mode="include",
+    )
+
+    assert second.status == "ok"
+    assert second.new_files == 1
+    assert second.errors == 0
+    assert client.download_fit.call_count == call_count_after_first + 1
+    assert db.is_downloaded("e2")
+    assert "e2" not in db.list_skipped_sports()
+    fit_files = list(pathlib.Path(output_dir).glob("*.fit"))
+    assert len(fit_files) == 1
+
+
+@pytest.mark.asyncio
+async def test_filter_changed_but_still_fails_no_redownload(db, output_dir, monkeypatch):
+    """Scenario 4 (KEY TEST): filter changes but the stored sport still fails it -> no re-download.
+
+    Distinguishes the approved recompute-based design from the REJECTED
+    signature-based design: e2 (CYCLING) is skipped under include:RUNNING,
+    then the filter changes to include:SWIMMING — a DIFFERENT filter string,
+    but one that still fails for CYCLING. Under a signature-based design,
+    ANY filter-string change would invalidate the cached skip and force a
+    re-download. Under this recompute-based design, only a filter change
+    that makes the STORED SPORT pass causes a re-download.
+    """
+    exercises = [_make_exercise("e2", sport="CYCLING")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {_fit_bytes_for("e2"): "CYCLING"})
+
+    first = await run_sync(
+        db, client, output_dir,
+        sport_filter=frozenset({"RUNNING"}), filter_mode="include",
+    )
+    assert first.new_files == 0
+    call_count_after_first = client.download_fit.call_count
+    assert call_count_after_first == 1
+    skipped_before = db.list_skipped_sports()
+    assert skipped_before == {"e2": "CYCLING"}
+
+    second = await run_sync(
+        db, client, output_dir,
+        sport_filter=frozenset({"SWIMMING"}), filter_mode="include",
+    )
+
+    assert second.status == "ok"
+    assert second.new_files == 0
+    assert second.errors == 0
+    assert client.download_fit.call_count == call_count_after_first
+    assert not db.is_downloaded("e2")
+    assert db.list_skipped_sports() == {"e2": "CYCLING"}
+
+
+@pytest.mark.asyncio
+async def test_no_filter_creates_no_skip_records(db, output_dir, monkeypatch):
+    """Scenario 5: with no active filter, nothing is ever recorded as skipped."""
+    exercises = [
+        _make_exercise("e1", sport="RUNNING"),
+        _make_exercise("e2", sport="CYCLING"),
+    ]
+    _make_token(db)
+    client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {
+        _fit_bytes_for("e1"): "RUNNING",
+        _fit_bytes_for("e2"): "CYCLING",
+    })
+
+    result = await run_sync(db, client, output_dir, sport_filter=frozenset())
+
+    assert result.status == "ok"
+    assert result.new_files == 2
+    assert db.is_downloaded("e1")
+    assert db.is_downloaded("e2")
+    assert db.list_skipped_sports() == {}
+
+
+@pytest.mark.asyncio
+async def test_downloaded_exercise_unaffected_by_stale_skip_row(db, output_dir, monkeypatch):
+    """Scenario 6: is_downloaded takes strict precedence over skip-exclusion.
+
+    e1 is already recorded in downloaded_exercise AND, simulating a prior
+    crash between record_downloaded and delete_skipped, still has a stale
+    row in skipped_exercise. A sync run must exclude e1 via is_downloaded
+    FIRST and never even consult the stale skipped_exercise row for e1.
+    """
+    exercises = [_make_exercise("e1", sport="RUNNING")]
+    _make_token(db)
+    db.record_downloaded("e1", "/data/fit/e1.fit", "RUNNING", "2026-01-01T08:00:00Z")
+    db.record_skipped("e1", "RUNNING")  # stale row left behind by a simulated crash
+
+    client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {_fit_bytes_for("e1"): "RUNNING"})
+
+    result = await run_sync(
+        db, client, output_dir,
+        sport_filter=frozenset({"SWIMMING"}), filter_mode="include",
+    )
+
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    client.download_fit.assert_not_called()
+    assert db.is_downloaded("e1")
+
+
+@pytest.mark.asyncio
+async def test_remembered_skips_not_counted_as_errors_or_new_files(db, output_dir, monkeypatch):
+    """Scenario 8 (narrower): remembered skips must never increment errors or new_files."""
+    db.record_skipped("e1", "CYCLING")
+    exercises = [_make_exercise("e1", sport="CYCLING")]
+    _make_token(db)
+    client = _fake_client(exercises)
+
+    result = await run_sync(
+        db, client, output_dir,
+        sport_filter=frozenset({"RUNNING"}), filter_mode="include",
+    )
+
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    client.download_fit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_filter_loosened_exercise_fails_reverification_still_cleans_up_correctly(
+    db, output_dir, monkeypatch
+):
+    """Extra edge case for FR4/FR5: when a previously-skipped exercise is
+    reconsidered (stored sport now passes) but the live FIT bytes reveal a
+    DIFFERENT effective sport that still fails the current filter, it must
+    be re-skipped (record_skipped refreshed), NOT written, and NOT counted
+    as an error — the stored sport is never trusted to write a file.
+    """
+    exercises = [_make_exercise("e2", sport="CYCLING")]
+    _make_token(db)
+    db.record_skipped("e2", "CYCLING")
+    client = _fake_client(exercises)
+    client.download_fit.side_effect = lambda token, eid: _fit_bytes_for(eid)
+    _patch_fit_sport(monkeypatch, {_fit_bytes_for("e2"): "MOUNTAIN_BIKING"})
+
+    result = await run_sync(
+        db, client, output_dir,
+        sport_filter=frozenset({"RUNNING", "CYCLING"}), filter_mode="include",
+    )
+
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    client.download_fit.assert_called_once()
+    assert not db.is_downloaded("e2")
+    assert db.list_skipped_sports() == {"e2": "MOUNTAIN_BIKING"}

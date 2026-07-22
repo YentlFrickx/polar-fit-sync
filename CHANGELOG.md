@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/YentlFrickx/polar-fit-sync/compare/v0.3.0...v0.4.0) (2026-07-22)
+
+
+### Features
+
+* add configurable sync start date and immediate sync on startup ([ee1d92b](https://github.com/YentlFrickx/polar-fit-sync/commit/ee1d92b69429ea64aa27aec19564b7bc1422da09))
+* add configurable sync start date and immediate sync on startup ([da480ee](https://github.com/YentlFrickx/polar-fit-sync/commit/da480ee0ffc18caee47bebd2f7687bf2a1305aa2))
+
 ## [0.3.0](https://github.com/YentlFrickx/polar-fit-sync/compare/v0.2.2...v0.3.0) (2026-07-15)
 
 

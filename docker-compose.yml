@@ -14,6 +14,11 @@ services:
       PFS_LOG_LEVEL: DEBUG
       PFS_DB_PATH: /data/state.db
       PFS_OUTPUT_DIR: /data/fit
+      # Uncomment to only sync exercises whose start_time is on/after this UTC
+      # day. Empty/unset = no cutoff (default). Requires a restart to take
+      # effect — see README.md's PFS_SYNC_START_DATE row for caveats
+      # (start_time not upload_time, ~30-day Polar upload window).
+      # PFS_SYNC_START_DATE: "2026-01-01"
       # For webhook testing:
       #   1. Set PFS_SYNC_MODE=both and PFS_WEBHOOK_SECRET=<your-secret> in .env
       #   2. Run: ngrok http 8080

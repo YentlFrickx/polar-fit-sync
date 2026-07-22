@@ -79,6 +79,7 @@ All configuration is done through environment variables. Copy `.env.example` to 
 | `POLAR_REDIRECT_URI` | **Yes** | — | Must exactly match the redirect URI registered in your Polar app |
 | `PFS_SYNC_MODE` | No | `poll` | Sync trigger mode: `poll`, `webhook`, or `both` |
 | `PFS_SYNC_INTERVAL_MINUTES` | No | `60` | How often to poll for new exercises (used in `poll` and `both` modes) |
+| `PFS_SYNC_ON_STARTUP` | No | `true` | Run one sync immediately when the service starts in `poll` or `both` mode, instead of waiting for the first `PFS_SYNC_INTERVAL_MINUTES` interval to elapse. Has no effect in webhook-only mode (there is no interval job to accelerate). Set `false` to restore the old behaviour of waiting a full interval before the first sync — e.g. to avoid a sync burst on every pod restart in a crash-looping deployment. |
 | `PFS_WEBHOOK_SECRET` | Required if using `webhook` or `both` mode | — | HMAC-SHA256 secret for verifying Polar webhook signatures |
 | `PFS_BASE_URL` | No | — | Public base URL of this service (e.g. `https://your-domain.example.com`); used to display the webhook registration URL on the status page |
 | `PFS_OUTPUT_DIR` | No | `/data/fit` | Directory where `.fit` files are written |
@@ -87,6 +88,7 @@ All configuration is done through environment variables. Copy `.env.example` to 
 | `PFS_LOG_LEVEL` | No | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `PFS_SPORT_FILTER` | No | `""` | Comma-separated sport names to filter (e.g. `RUNNING,CYCLING`). Empty = no filter. Matching is performed against the sport value parsed from the downloaded FIT file's session message when available, falling back to Polar's coarse API sport label if parsing fails. This lets you distinguish activities (e.g. walking vs. generic/uncategorized) that Polar's exercise-list API reports identically as `OTHER`. |
 | `PFS_SPORT_FILTER_MODE` | No | `include` | `include` = allow-list (only listed sports); `exclude` = block-list (skip listed sports). |
+| `PFS_SYNC_START_DATE` | No | `""` | Optional cutoff date in `YYYY-MM-DD` format. When set, only exercises whose activity `start_time` is on or after `00:00:00 UTC` on that day are downloaded; empty (the default) disables the filter and syncs everything, matching prior behaviour. The cutoff is forward-only (it never deletes or reclassifies already-downloaded files) and applies to the UTC calendar day as a whole boundary, not a precise instant — a bare offset-less `start_time` (Polar's documented local-time format) is treated as UTC rather than adjusted for the activity's actual timezone. Filtering keys on activity `start_time`, **not** Polar's `upload_time` — an old workout manually re-uploaded to Polar after the cutoff is set is still excluded if its activity date predates the cutoff. This is a config-only setting: changing it requires editing `.env`/`docker-compose.yml` and restarting the container, there is no live reload. Also note Polar's `/v3/exercises` endpoint itself only ever returns exercises uploaded to Flow in the last ~30 days, so this cutoff can only filter within that already-narrow window — it cannot be used to reach or exclude older historical data Polar never surfaces in the first place. |
 
 ---
 
@@ -94,7 +96,7 @@ All configuration is done through environment variables. Copy `.env.example` to 
 
 ### `poll` (default)
 
-The scheduler checks Polar for new exercises every `PFS_SYNC_INTERVAL_MINUTES` minutes. No public URL or webhook registration required. Best for home servers or environments without inbound internet access.
+The scheduler checks Polar for new exercises every `PFS_SYNC_INTERVAL_MINUTES` minutes. No public URL or webhook registration required. Best for home servers or environments without inbound internet access. By default (`PFS_SYNC_ON_STARTUP=true`), the first sync runs immediately on startup rather than waiting a full interval; that first run is recorded with `trigger=startup` (see below). Set `PFS_SYNC_ON_STARTUP=false` to wait for the first interval instead.
 
 ### `webhook`
 
@@ -119,7 +121,7 @@ ngrok http 8080
 
 ### `both`
 
-Interval polling and webhook-triggered syncs run together. Files arrive quickly via webhook; the poll interval acts as a catch-up safety net.
+Interval polling and webhook-triggered syncs run together. Files arrive quickly via webhook; the poll interval acts as a catch-up safety net. As in `poll` mode, `PFS_SYNC_ON_STARTUP` (default `true`) runs the first poll immediately on startup rather than waiting a full interval.
 
 ---
 

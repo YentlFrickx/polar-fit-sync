@@ -18,6 +18,9 @@
 # What this file does NOT do: it does not read from the database, perform network
 # calls, or contain any business logic.
 
+from datetime import datetime, timezone
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import model_validator
 
@@ -42,6 +45,16 @@ class Settings(BaseSettings):
     # --- Sync behaviour ---
     pfs_sync_mode: str = "poll"  # poll | webhook | both
     pfs_sync_interval_minutes: int = 60
+    # PFS_SYNC_START_DATE: optional YYYY-MM-DD floor on exercise start_time.
+    # Empty string (the default) means no cutoff — all exercises are eligible,
+    # exactly as before this feature existed (backwards compatible).
+    pfs_sync_start_date: str = ""
+    # PFS_SYNC_ON_STARTUP: opt-out (default on), poll/both only. When true, the
+    # interval job's first fire is moved to now instead of waiting a full
+    # PFS_SYNC_INTERVAL_MINUTES after startup. Set false to restore the old
+    # wait-for-the-first-interval behaviour (e.g. to avoid a sync burst on
+    # every pod restart in a crash-looping deployment).
+    pfs_sync_on_startup: bool = True
 
     # --- Webhook ---
     pfs_webhook_secret: str = ""
@@ -75,6 +88,17 @@ class Settings(BaseSettings):
                 f"PFS_SPORT_FILTER_MODE must be 'include' or 'exclude', "
                 f"got '{self.pfs_sport_filter_mode}'"
             )
+        # Fail fast on a malformed start date rather than let a typo silently
+        # disable the whole feature at some later point (e.g. sync_start_date()
+        # returning None every run because strptime never gets a chance to run).
+        if self.pfs_sync_start_date:
+            try:
+                datetime.strptime(self.pfs_sync_start_date, "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError(
+                    f"PFS_SYNC_START_DATE must be in YYYY-MM-DD format, "
+                    f"got '{self.pfs_sync_start_date}'"
+                ) from exc
         return self
 
     def sport_filter_set(self) -> frozenset:
@@ -91,6 +115,22 @@ class Settings(BaseSettings):
             token.strip().upper()
             for token in self.pfs_sport_filter.split(",")
             if token.strip()
+        )
+
+    def sync_start_date(self) -> Optional[datetime]:
+        """Parse PFS_SYNC_START_DATE into an aware UTC datetime, or None if unset.
+
+        Returns None (the disabled sentinel) when the field is empty, so
+        run_sync's fast path never has to special-case an empty string. The
+        parsed value is always tz-aware UTC at 00:00:00 on the given day, so
+        the comparison against exercise start_time in sync.py is never a
+        naive-vs-aware mismatch. Malformed values never reach this method in
+        practice — _validate_settings already rejected them at construction.
+        """
+        if not self.pfs_sync_start_date:
+            return None
+        return datetime.strptime(self.pfs_sync_start_date, "%Y-%m-%d").replace(
+            tzinfo=timezone.utc
         )
 
     def require_oauth(self) -> None:

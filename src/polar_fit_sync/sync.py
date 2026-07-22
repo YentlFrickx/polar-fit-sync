@@ -63,6 +63,50 @@ def _passes_filter(sport: Optional[str], sport_filter: frozenset, mode: str) -> 
         return sport_upper not in sport_filter if sport_upper is not None else True
 
 
+def _after_start_date(start_time: Optional[str], start_date: Optional[datetime]) -> bool:
+    """Decide whether one exercise is on or after the configured sync cutoff.
+
+    No start_date configured is the fast path (FR7): return True immediately
+    without touching start_time at all, so a run with the feature disabled
+    pays zero extra cost per exercise.
+
+    A null/empty start_time is kept rather than excluded (FR5) — we never
+    drop an exercise we cannot date, mirroring the codebase's existing
+    tolerance for null dates in _build_path (falls back to "00000000" rather
+    than erroring).
+
+    Polar documents start_time as local time with NO offset in practice (e.g.
+    '2008-10-13T10:40:02', no trailing Z) alongside a separate
+    start_time_utc_offset field we don't consume. fromisoformat on such a
+    value yields a naive datetime, which would raise TypeError when compared
+    to the aware start_date below. We normalize naive -> UTC before
+    comparing, the same idiom already used for token-expiry parsing at
+    sync.py:138-140 (NOT _build_path, which never compares datetimes and so
+    never needed this normalization).
+
+    Any parse/compare failure (including a non-string start_time, hence
+    catching TypeError as well as ValueError) is treated as "keep, but tell
+    someone" — logged at WARNING rather than DEBUG so a systemic Polar
+    date-format drift is visible under this project's default
+    PFS_LOG_LEVEL=INFO instead of silently neutering the whole feature.
+    """
+    if start_date is None:
+        return True
+    if not start_time:
+        return True
+    try:
+        parsed = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed >= start_date
+    except (ValueError, TypeError):
+        logger.warning(
+            "Could not parse start_time %r for date-gate comparison; keeping exercise.",
+            start_time,
+        )
+        return True
+
+
 def _parse_fit_sport(content: bytes) -> Optional[str]:
     """Extract the session sport from raw FIT bytes, uppercased.
 
@@ -114,6 +158,7 @@ async def run_sync(
     trigger: str = "poll",
     sport_filter: frozenset = frozenset(),
     filter_mode: str = "include",
+    start_date: Optional[datetime] = None,
 ) -> RunResult:
     """Download new Polar exercise FIT files incrementally.
 
@@ -201,6 +246,7 @@ async def run_sync(
         # where filtering happens and stays first.
         new_exercises = []
         already_downloaded = 0
+        before_start_date = 0
         remembered_skips = 0
         for ex in exercises:
             if db.is_downloaded(ex.id):
@@ -211,6 +257,14 @@ async def run_sync(
                 # record_downloaded and delete_skipped harmless (FR6) — it is
                 # simply never read once the exercise is downloaded.
                 already_downloaded += 1
+                continue
+            if not _after_start_date(ex.start_time, start_date):
+                # Excluded by the configured start-date floor. This check
+                # runs before the skip-tracking block below on purpose: a
+                # date-excluded exercise is not a sport-filter skip, and
+                # recording it in skipped_exercise would pollute that table
+                # with rows the sport filter never produced (FR8).
+                before_start_date += 1
                 continue
             if sport_filter and ex.id in skipped_sports:
                 stored_sport = skipped_sports[ex.id]
@@ -226,11 +280,12 @@ async def run_sync(
 
         logger.info(
             "Sync run (trigger=%s): %d total, %d new, %d already downloaded, "
-            "%d remembered skips.",
+            "%d before start date, %d remembered skips.",
             trigger,
             len(exercises),
             len(new_exercises),
             already_downloaded,
+            before_start_date,
             remembered_skips,
         )
 

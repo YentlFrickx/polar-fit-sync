@@ -21,6 +21,7 @@
 # database, or make network calls.
 
 import logging
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -45,17 +46,26 @@ def build_scheduler(settings: Settings, runner) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
 
     if settings.pfs_sync_mode in ("poll", "both"):
-        scheduler.add_job(
-            runner,
-            "interval",
+        job_kwargs = dict(
+            trigger="interval",
             minutes=settings.pfs_sync_interval_minutes,
             id="polar_sync",
             name="Polar FIT sync",
             misfire_grace_time=60,
         )
+        if settings.pfs_sync_on_startup:
+            # Accelerate the FIRST fire to now; subsequent fires stay on the
+            # normal interval (APScheduler recomputes next_run_time from the
+            # trigger after each run). Passing next_run_time=None would PAUSE
+            # the job (never fire), so when startup-sync is disabled we OMIT
+            # the kwarg entirely rather than passing None — verified against
+            # the installed apscheduler source (base.py add_job/_real_add_job).
+            job_kwargs["next_run_time"] = datetime.now(timezone.utc)
+        scheduler.add_job(runner, **job_kwargs)
         logger.debug(
-            "Scheduled poll sync job: every %d minutes.",
+            "Scheduled poll sync job: every %d minutes (startup sync %s).",
             settings.pfs_sync_interval_minutes,
+            "enabled" if settings.pfs_sync_on_startup else "disabled",
         )
     else:
         logger.debug("Sync mode is '%s' — no interval job scheduled.", settings.pfs_sync_mode)

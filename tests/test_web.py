@@ -4,12 +4,14 @@
 # without a real event loop. The Polar HTTP client is replaced by a MagicMock
 # so tests never make real network calls.
 
+import asyncio
 import hashlib
 import hmac
 import json
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,7 +27,13 @@ from polar_fit_sync.web import create_app
 # ---------------------------------------------------------------------------
 
 
-def _make_settings(tmp_path, sync_mode: str = "poll", webhook_secret: str = ""):
+def _make_settings(
+    tmp_path,
+    sync_mode: str = "poll",
+    webhook_secret: str = "",
+    pfs_sync_on_startup: bool = True,
+    pfs_sync_interval_minutes: int = 60,
+):
     """Create a Settings object wired to a temp DB and output dir."""
     return Settings(
         polar_client_id="test-client",
@@ -37,6 +45,8 @@ def _make_settings(tmp_path, sync_mode: str = "poll", webhook_secret: str = ""):
         pfs_webhook_secret=webhook_secret,
         pfs_base_url="http://localhost:8080",
         pfs_log_level="ERROR",
+        pfs_sync_on_startup=pfs_sync_on_startup,
+        pfs_sync_interval_minutes=pfs_sync_interval_minutes,
     )
 
 
@@ -318,3 +328,151 @@ def test_webhook_returns_200_in_both_mode(both_client):
         headers={"Polar-Webhook-Signature": sig},
     )
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Startup sync (PFS_SYNC_ON_STARTUP)
+#
+# These tests drive the FastAPI lifespan via `with TestClient(app):`, which
+# runs a real event loop. An immediately-due APScheduler job is dispatched on
+# a *later* loop iteration than scheduler.start() (see PLAN_SYNC_ON_STARTUP.md
+# "Verified APScheduler next_run_time semantics" — AsyncIOScheduler.start()
+# defers via call_soon_threadsafe), so assertions on the dispatched job's
+# effects must poll rather than check immediately after entering the context.
+#
+# We use a plain synchronous time.sleep/time.monotonic polling loop rather
+# than asyncio.run(...) here: nesting asyncio.run inside a `with
+# TestClient(app):` block risks conflicting with TestClient's own internal
+# event loop / anyio portal. All the state we poll on (AsyncMock.await_count,
+# AsyncMock.await_args_list, sqlite-backed Db reads) is safe to read from a
+# plain synchronous loop on the test thread.
+# ---------------------------------------------------------------------------
+
+
+def _poll_until(predicate, timeout=2.0, interval=0.05):
+    """Poll a zero-arg predicate until it returns truthy or timeout elapses."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
+def test_startup_sync_poll_default_labels_first_run_startup(tmp_path):
+    """Scenario 1: poll mode, PFS_SYNC_ON_STARTUP default (True) -> the
+    accelerated first fire runs run_sync with trigger="startup"; /healthz
+    still returns 200."""
+    settings = _make_settings(tmp_path, sync_mode="poll")
+    mock_run_sync = AsyncMock()
+
+    with patch("polar_fit_sync.web.run_sync", mock_run_sync):
+        app = create_app(settings)
+        with TestClient(app) as client:
+            resp = client.get("/healthz")
+            assert resp.status_code == 200
+
+            assert _poll_until(lambda: mock_run_sync.await_count >= 1), (
+                f"Expected at least 1 await, got {mock_run_sync.await_count} "
+                f"after polling timeout"
+            )
+
+            first_call_kwargs = mock_run_sync.await_args_list[0].kwargs
+            assert first_call_kwargs.get("trigger") == "startup"
+
+
+def test_startup_sync_webhook_mode_never_calls_run_sync(tmp_path):
+    """Scenario 3: webhook-only mode adds no interval job, so run_sync is
+    never invoked at startup regardless of PFS_SYNC_ON_STARTUP."""
+    settings = _make_settings(tmp_path, sync_mode="webhook", webhook_secret="wh-secret")
+    mock_run_sync = AsyncMock()
+
+    with patch("polar_fit_sync.web.run_sync", mock_run_sync):
+        app = create_app(settings)
+        with TestClient(app) as client:
+            resp = client.get("/healthz")
+            assert resp.status_code == 200
+            time.sleep(0.2)
+
+    assert mock_run_sync.await_count == 0
+
+    db = Db(str(tmp_path / "test.db"))
+    db.init_schema()
+    assert db.last_run() is None
+
+
+def test_startup_sync_disabled_poll_does_not_call_run_sync_at_startup(tmp_path):
+    """Scenario 4: PFS_SYNC_ON_STARTUP=False -> the interval job's first fire
+    is deferred to the full interval, so run_sync must not be called during
+    the startup window."""
+    settings = _make_settings(
+        tmp_path,
+        sync_mode="poll",
+        pfs_sync_on_startup=False,
+        pfs_sync_interval_minutes=60,
+    )
+    mock_run_sync = AsyncMock()
+
+    with patch("polar_fit_sync.web.run_sync", mock_run_sync):
+        app = create_app(settings)
+        with TestClient(app) as client:
+            resp = client.get("/healthz")
+            assert resp.status_code == 200
+            time.sleep(0.2)
+
+    assert mock_run_sync.await_count == 0
+
+    db = Db(str(tmp_path / "test.db"))
+    db.init_schema()
+    assert db.last_run() is None
+
+
+def test_startup_sync_no_token_records_startup_no_token_run(tmp_path):
+    """Scenario 6: no linked account, real run_sync (not mocked) -> the
+    accelerated first run gracefully records trigger="startup",
+    status="no_token" without crashing or blocking startup. /healthz must
+    still return 200."""
+    settings = _make_settings(tmp_path, sync_mode="poll")
+
+    app = create_app(settings)
+    with TestClient(app) as client:
+        resp = client.get("/healthz")
+        assert resp.status_code == 200
+
+        db = Db(str(tmp_path / "test.db"))
+        db.init_schema()
+
+        assert _poll_until(lambda: db.last_run() is not None)
+        last_run = db.last_run()
+
+    assert last_run is not None
+    assert last_run["trigger"] == "startup"
+    assert last_run["status"] == "no_token"
+
+
+def test_startup_sync_does_not_block_healthz(tmp_path):
+    """O4 (required): a slow immediate run must not block FastAPI lifespan
+    startup / readiness. run_sync is patched with an AsyncMock whose side
+    effect sleeps for SLOW seconds, clearly longer than a healthz round-trip.
+    /healthz must return 200 in well under SLOW seconds. This test is
+    designed to fail if a future refactor makes the startup sync blocking."""
+    SLOW = 3.0
+    settings = _make_settings(tmp_path, sync_mode="poll")
+
+    async def _slow(*args, **kwargs):
+        await asyncio.sleep(SLOW)
+
+    mock_run_sync = AsyncMock(side_effect=_slow)
+
+    with patch("polar_fit_sync.web.run_sync", mock_run_sync):
+        app = create_app(settings)
+        with TestClient(app) as client:
+            start = time.monotonic()
+            resp = client.get("/healthz")
+            elapsed = time.monotonic() - start
+
+            assert resp.status_code == 200
+            assert elapsed < SLOW / 2, (
+                f"/healthz took {elapsed:.2f}s — readiness must not wait on "
+                f"the in-flight startup sync (SLOW={SLOW}s)."
+            )

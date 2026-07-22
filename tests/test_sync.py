@@ -894,3 +894,251 @@ async def test_filter_loosened_exercise_fails_reverification_still_cleans_up_cor
     client.download_fit.assert_called_once()
     assert not db.is_downloaded("e2")
     assert db.list_skipped_sports() == {"e2": "MOUNTAIN_BIKING"}
+
+
+# ---------------------------------------------------------------------------
+# Sync start-date gating (PFS_SYNC_START_DATE)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exercise_before_cutoff_excluded(db, output_dir):
+    """Scenario 2: an exercise before the configured start_date is excluded —
+    never downloaded, never parsed, not counted as new_files or errors."""
+    exercises = [_make_exercise("e1", start_time="2025-12-31T23:00:00Z")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    start_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    result = await run_sync(db, client, output_dir, start_date=start_date)
+
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    assert not db.is_downloaded("e1")
+    client.download_fit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_exercise_after_cutoff_included(db, output_dir):
+    """Scenario 2: an exercise after the configured start_date is downloaded
+    and recorded normally."""
+    exercises = [_make_exercise("e2", start_time="2026-01-02T08:00:00Z")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    start_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    result = await run_sync(db, client, output_dir, start_date=start_date)
+
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert result.errors == 0
+    assert db.is_downloaded("e2")
+
+
+@pytest.mark.asyncio
+async def test_exercise_exactly_at_cutoff_is_inclusive(db, output_dir):
+    """Scenario 3: the boundary is inclusive (>=) — an exercise starting
+    exactly at 00:00:00 UTC on the cutoff date is kept."""
+    exercises = [_make_exercise("e1", start_time="2026-01-01T00:00:00Z")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    start_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    result = await run_sync(db, client, output_dir, start_date=start_date)
+
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert db.is_downloaded("e1")
+
+
+@pytest.mark.asyncio
+async def test_no_start_date_processes_all_exercises(db, output_dir):
+    """Scenario 1: PFS_SYNC_START_DATE unset (start_date=None) -> all
+    exercises are processed exactly as today (fast path, never consulted)."""
+    exercises = [
+        _make_exercise("e1", start_time="2020-01-01T00:00:00Z"),
+        _make_exercise("e2", start_time="2026-01-01T00:00:00Z"),
+    ]
+    _make_token(db)
+    client = _fake_client(exercises)
+
+    result = await run_sync(db, client, output_dir, start_date=None)
+
+    assert result.status == "ok"
+    assert result.new_files == 2
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+    assert db.is_downloaded("e2")
+
+
+@pytest.mark.asyncio
+async def test_future_start_date_filters_everything_ok(db, output_dir):
+    """Scenario 5: a start_date after all available exercises' start_time ->
+    zero new_files, zero errors, status still "ok" (empty result is valid)."""
+    exercises = [
+        _make_exercise("e1", start_time="2026-01-01T00:00:00Z"),
+        _make_exercise("e2", start_time="2026-01-02T00:00:00Z"),
+    ]
+    _make_token(db)
+    client = _fake_client(exercises)
+    start_date = datetime(2099, 1, 1, tzinfo=timezone.utc)
+
+    result = await run_sync(db, client, output_dir, start_date=start_date)
+
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    client.download_fit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_null_start_time_kept_by_date_gate(db, output_dir):
+    """Scenario 6: an exercise with start_time=None is kept — never dropped
+    by the date gate, matching the codebase's existing tolerance for null
+    dates (_build_path's "00000000" fallback)."""
+    exercises = [_make_exercise("e1", start_time=None)]
+    _make_token(db)
+    client = _fake_client(exercises)
+    start_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    result = await run_sync(db, client, output_dir, start_date=start_date)
+
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+
+
+@pytest.mark.asyncio
+async def test_unparseable_start_time_kept_and_logs_warning(db, output_dir, caplog):
+    """Scenario 6: an exercise with an unparseable start_time string is kept
+    (conservative default) AND emits a WARNING-level log record, so a
+    systemic Polar date-format change is visible under default PFS_LOG_LEVEL=INFO."""
+    exercises = [_make_exercise("e1", start_time="not-a-date")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    start_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    with caplog.at_level("WARNING"):
+        result = await run_sync(db, client, output_dir, start_date=start_date)
+
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+    assert any(
+        record.levelname == "WARNING" and "e1" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_naive_offset_less_start_time_parsed_as_utc(db, output_dir):
+    """Scenario 7 (the naive-datetime bug the plan calls out): a bare,
+    offset-less local start_time (no "Z" suffix, matching Polar's documented
+    local-time format) must be normalized to UTC and gated normally — it must
+    NOT raise TypeError from comparing naive vs. aware datetimes, and must NOT
+    fall into the unparseable-keep path. Existing fixtures only use
+    Z-suffixed values, so this test is the only one exercising that branch."""
+    exercises = [_make_exercise("e1", start_time="2026-01-02T08:00:00")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    start_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    result = await run_sync(db, client, output_dir, start_date=start_date)
+
+    assert result.status == "ok"
+    assert result.new_files == 1
+    assert result.errors == 0
+    assert db.is_downloaded("e1")
+
+
+@pytest.mark.asyncio
+async def test_naive_start_time_before_cutoff_excluded_without_raising(db, output_dir):
+    """Companion to the naive-parsing test above: a naive (no "Z") start_time
+    that falls BEFORE the cutoff once normalized to UTC must be excluded
+    cleanly, not raise, and not fall into the unparseable-keep path."""
+    exercises = [_make_exercise("e1", start_time="2025-12-31T23:00:00")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    start_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    result = await run_sync(db, client, output_dir, start_date=start_date)
+
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    assert not db.is_downloaded("e1")
+    client.download_fit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_already_downloaded_precedes_date_gate(db, output_dir):
+    """Scenario 9 (dedup precedence): an exercise before the cutoff that is
+    ALREADY recorded in downloaded_exercise must short-circuit on
+    is_downloaded before the date gate is even relevant -- no behaviour
+    change vs. today for already-downloaded items (no re-processing, no
+    re-deletion, download_fit never called again)."""
+    exercises = [_make_exercise("e1", start_time="2025-01-01T00:00:00Z")]
+    _make_token(db)
+    db.record_downloaded("e1", "/data/fit/e1.fit", "RUNNING", "2025-01-01T00:00:00Z")
+
+    client = _fake_client(exercises)
+    start_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    result = await run_sync(db, client, output_dir, start_date=start_date)
+
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    client.download_fit.assert_not_called()
+    assert db.is_downloaded("e1")
+
+
+@pytest.mark.asyncio
+async def test_date_excluded_exercise_does_not_pollute_skip_table(db, output_dir):
+    """Scenario 9 (skip-table non-pollution): a date-excluded exercise must
+    NOT appear in db.list_skipped_sports() afterward. The date gate runs
+    before the skip-tracking recompute and must never write to
+    skipped_exercise -- that table is reserved for sport-filter skips only
+    (FR8)."""
+    exercises = [_make_exercise("e1", sport="CYCLING", start_time="2025-12-31T23:00:00Z")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    start_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    result = await run_sync(
+        db, client, output_dir,
+        start_date=start_date,
+        sport_filter=frozenset({"RUNNING"}), filter_mode="include",
+    )
+
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    assert not db.is_downloaded("e1")
+    assert db.list_skipped_sports() == {}
+
+
+@pytest.mark.asyncio
+async def test_webhook_target_id_excludes_pre_cutoff_exercise(db, output_dir):
+    """Scenario 8: a webhook-triggered (target_id) sync for a single
+    pre-cutoff exercise must exclude it identically to the poll path -- poll
+    and webhook share one code path through the same date gate."""
+    exercises = [_make_exercise("e1", start_time="2025-12-31T23:00:00Z")]
+    _make_token(db)
+    client = _fake_client(exercises)
+    start_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    result = await run_sync(
+        db, client, output_dir,
+        target_id="e1", trigger="webhook",
+        start_date=start_date,
+    )
+
+    assert result.status == "ok"
+    assert result.new_files == 0
+    assert result.errors == 0
+    assert not db.is_downloaded("e1")
+    client.download_fit.assert_not_called()

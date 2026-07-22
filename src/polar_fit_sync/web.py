@@ -69,13 +69,31 @@ def create_app(settings: Settings) -> FastAPI:
     # silently swallowing them into orphan tasks. It also avoids the deprecated
     # asyncio.get_event_loop() pattern that raises a DeprecationWarning in
     # Python 3.12+ when called outside a running loop.
+    #
+    # When startup-sync is enabled, build_scheduler moves the interval job's
+    # first fire to now (see scheduler.build_scheduler), so this same closure
+    # also handles that accelerated first run. We label that first invocation
+    # trigger="startup" and every later invocation trigger="poll", using a
+    # mutable one-element list cell captured by the closure — a plain bool
+    # local would need `nonlocal` to be reassigned from inside the function,
+    # and a list sidesteps that ceremony. When startup-sync is disabled the
+    # cell starts False, so the first run is "poll" exactly as before (no
+    # "startup" label is ever emitted in that case).
+    _first_run_pending = [settings.pfs_sync_on_startup]
+
     async def _sync_runner():
         """Await run_sync inside APScheduler's async job dispatch."""
+        if _first_run_pending[0]:
+            _first_run_pending[0] = False
+            trigger = "startup"
+        else:
+            trigger = "poll"
         await run_sync(
             db, client, settings.pfs_output_dir,
-            trigger="poll",
+            trigger=trigger,
             sport_filter=settings.sport_filter_set(),
             filter_mode=settings.pfs_sport_filter_mode,
+            start_date=settings.sync_start_date(),
         )
 
     scheduler = build_scheduler(settings, _sync_runner)
@@ -220,6 +238,7 @@ def create_app(settings: Settings) -> FastAPI:
                 trigger="webhook",
                 sport_filter=settings.sport_filter_set(),
                 filter_mode=settings.pfs_sport_filter_mode,
+                start_date=settings.sync_start_date(),
             )
         )
 

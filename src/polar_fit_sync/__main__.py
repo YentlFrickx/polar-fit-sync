@@ -115,6 +115,7 @@ def _run_sync(settings) -> None:
             trigger="manual",
             sport_filter=settings.sport_filter_set(),
             filter_mode=settings.pfs_sport_filter_mode,
+            start_date=settings.sync_start_date(),
         )
     )
 

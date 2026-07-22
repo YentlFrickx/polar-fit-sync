@@ -12,8 +12,8 @@
 #   can be enforced in consume_state without a separate background sweeper.
 # - downloaded_exercise uses INSERT OR IGNORE so that a re-run of record_downloaded
 #   for an id that is already present is a silent no-op rather than an error.
-# - sync_run has a trigger column (poll | webhook | manual) so that dashboards can
-#   distinguish automated from manually invoked syncs.
+# - sync_run has a trigger column (poll | webhook | manual | startup) so that
+#   dashboards can distinguish automated from manually invoked syncs.
 # - skipped_exercise uses INSERT OR REPLACE (unlike downloaded_exercise's INSERT
 #   OR IGNORE) because a re-skip must refresh the stored sport/timestamp — the
 #   caller re-evaluates the same id on every run it isn't yet downloaded, and a

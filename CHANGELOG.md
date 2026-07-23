@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/YentlFrickx/polar-fit-sync/compare/v0.4.0...v0.5.0) (2026-07-23)
+
+
+### Features
+
+* split FIT output dir from DB dir, add configurable listen port ([097f5b8](https://github.com/YentlFrickx/polar-fit-sync/commit/097f5b87d168660f476c52e487575e802135c4ce))
+* split FIT output dir from DB dir, add configurable listen port ([be4db6e](https://github.com/YentlFrickx/polar-fit-sync/commit/be4db6e7be45aa359fd7c76fe92dbf98f7e03a7c))
+
 ## [0.4.0](https://github.com/YentlFrickx/polar-fit-sync/compare/v0.3.0...v0.4.0) (2026-07-22)
 
 

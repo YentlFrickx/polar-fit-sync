@@ -5,4 +5,4 @@
 # and runs the sync engine in-process via APScheduler (poll) or a webhook
 # endpoint, depending on configuration.
 
-__version__ = "0.4.0"  # x-release-please-version
+__version__ = "0.5.0"  # x-release-please-version

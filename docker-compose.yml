@@ -2,7 +2,7 @@ services:
   polar-fit-sync:
     build: .
     ports:
-      - "8080:8080"
+      - "${PFS_PORT:-8080}:${PFS_PORT:-8080}"
     volumes:
       - pfs-data:/data
     # Secrets and mode-specific config come from .env (copy .env.example → .env first)
@@ -14,6 +14,11 @@ services:
       PFS_LOG_LEVEL: DEBUG
       PFS_DB_PATH: /data/state.db
       PFS_OUTPUT_DIR: /data/fit
+      PFS_PORT: "${PFS_PORT:-8080}"
+      # Uncomment (and set PFS_PORT in your shell/.env) to change the port the
+      # app binds inside the container. The host mapping above already tracks
+      # PFS_PORT automatically via the ${PFS_PORT:-8080} interpolation.
+      # PFS_PORT: "9090"
       # Uncomment to only sync exercises whose start_time is on/after this UTC
       # day. Empty/unset = no cutoff (default). Requires a restart to take
       # effect — see README.md's PFS_SYNC_START_DATE row for caveats
@@ -24,12 +29,15 @@ services:
       #   2. Run: ngrok http 8080
       #   3. Register https://<ngrok-host>/webhook/polar with your Polar app
     healthcheck:
+      # Reads PFS_PORT from the container's own environment (not the host shell)
+      # since this command runs inside the container — it must hit whatever port
+      # the app actually bound, which tracks PFS_PORT above.
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')",
+          "import os,urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ.get('PFS_PORT','8080')}/healthz\")",
         ]
       interval: 30s
       timeout: 5s

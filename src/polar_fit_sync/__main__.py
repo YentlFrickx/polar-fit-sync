@@ -86,7 +86,12 @@ def _run_web(settings) -> None:
     from polar_fit_sync.web import create_app
 
     app = create_app(settings)
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level=settings.pfs_log_level.lower())
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=settings.pfs_port,
+        log_level=settings.pfs_log_level.lower(),
+    )
 
 
 def _run_sync(settings) -> None:

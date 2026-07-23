@@ -95,3 +95,21 @@ def test_sync_on_startup_env_string_coerces_to_false(raw_value, monkeypatch):
     monkeypatch.setenv("PFS_SYNC_ON_STARTUP", raw_value)
     settings = Settings(**_base_kwargs(), _env_file=None)
     assert settings.pfs_sync_on_startup is False
+
+
+def test_port_defaults_8080():
+    settings = Settings(**_base_kwargs(), _env_file=None)
+    assert settings.pfs_port == 8080
+
+
+def test_port_env_string_coerces_to_int(monkeypatch):
+    monkeypatch.setenv("PFS_PORT", "9090")
+    settings = Settings(**_base_kwargs(), _env_file=None)
+    assert settings.pfs_port == 9090
+    assert isinstance(settings.pfs_port, int)
+
+
+def test_port_out_of_range_raises():
+    with pytest.raises((ValueError, ValidationError)) as excinfo:
+        Settings(**_base_kwargs(pfs_port=70000), _env_file=None)
+    assert "PFS_PORT" in str(excinfo.value)

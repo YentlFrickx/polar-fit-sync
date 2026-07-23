@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     pfs_webhook_secret: str = ""
     pfs_base_url: str = ""
 
+    # --- Web server ---
+    # PFS_PORT: TCP port the uvicorn server binds (host 0.0.0.0). Default 8080
+    # matches the previously-hardcoded value and the Dockerfile EXPOSE / compose
+    # port mapping. Change requires a restart (and a matching compose port map).
+    pfs_port: int = 8080
+
     # --- Observability ---
     pfs_log_level: str = "INFO"
 
@@ -99,6 +105,12 @@ class Settings(BaseSettings):
                     f"PFS_SYNC_START_DATE must be in YYYY-MM-DD format, "
                     f"got '{self.pfs_sync_start_date}'"
                 ) from exc
+        # An out-of-range port would otherwise surface only as a cryptic OS-level
+        # bind failure from uvicorn much later at startup — reject it here instead.
+        if not (1 <= self.pfs_port <= 65535):
+            raise ValueError(
+                f"PFS_PORT must be between 1 and 65535, got {self.pfs_port}"
+            )
         return self
 
     def sport_filter_set(self) -> frozenset:

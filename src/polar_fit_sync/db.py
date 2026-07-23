@@ -22,6 +22,7 @@
 # What this file does NOT do: it does not make network calls, read environment
 # variables, or contain any sync business logic.
 
+import pathlib
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -57,6 +58,16 @@ class Db:
         # path is the filesystem path to the SQLite file. Passing ":memory:" is
         # valid for tests.
         self._path = path
+        # Ensure the DB's parent directory exists so PFS_DB_PATH can point at a
+        # location wholly independent of PFS_OUTPUT_DIR. sqlite3.connect does not
+        # create missing directories; without this, a non-default PFS_DB_PATH
+        # whose dir isn't otherwise created (e.g. by the output-dir mkdir) fails
+        # with "unable to open database file". ":memory:" and bare filenames
+        # (no directory component) are skipped.
+        if path != ":memory:":
+            parent = pathlib.Path(path).parent
+            if str(parent) not in ("", "."):
+                parent.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)

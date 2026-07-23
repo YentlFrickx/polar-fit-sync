@@ -21,6 +21,35 @@ def db(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Parent-directory creation (PFS_DB_PATH independent of PFS_OUTPUT_DIR)
+# ---------------------------------------------------------------------------
+
+
+def test_init_creates_missing_parent_dir(tmp_path):
+    nested = tmp_path / "does" / "not" / "exist" / "state.db"
+    d = Db(str(nested))
+    assert nested.parent.is_dir()
+    d.init_schema()
+    assert d.count_downloaded() == 0
+    d.record_downloaded("ex1", "/data/fit/ex1.fit", "RUNNING", "2026-01-01T00:00:00Z")
+    assert d.count_downloaded() == 1
+
+
+def test_init_memory_db_ok():
+    d = Db(":memory:")
+    d.init_schema()
+
+
+def test_db_dir_creation_independent_of_output_dir(tmp_path):
+    db_dir = tmp_path / "db_tree" / "nested"
+    output_dir = tmp_path / "output_tree" / "nested"
+    d = Db(str(db_dir / "state.db"))
+    d.init_schema()
+    assert db_dir.is_dir()
+    assert not output_dir.exists()
+
+
+# ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 
